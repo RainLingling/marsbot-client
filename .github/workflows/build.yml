@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 jobs:
   build-linux:
     runs-on: ubuntu-latest
@@ -17,7 +20,10 @@ jobs:
           node-version: '22'
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run package:linux
+      - name: Build Linux
+        run: pnpm run package:linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/upload-artifact@v4
         with:
           name: marsbot-linux
@@ -33,7 +39,10 @@ jobs:
           node-version: '22'
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run package:win
+      - name: Build Windows
+        run: pnpm run package:win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/upload-artifact@v4
         with:
           name: marsbot-windows
@@ -49,7 +58,10 @@ jobs:
           node-version: '22'
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run package:mac
+      - name: Build macOS
+        run: pnpm run package:mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/upload-artifact@v4
         with:
           name: marsbot-mac
@@ -69,3 +81,5 @@ jobs:
         with:
           files: artifacts/**/*
           generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
