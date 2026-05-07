@@ -5,6 +5,7 @@
  */
 import { computeFeatureVector, type RawDataForFeatures } from "./featureEngineering";
 import { runHardRuleEngine, type RuleInputData } from "./hardRuleEngine";
+import { runDynamicRuleEngine } from "./ruleUpdater";
 import { computeScorecardResult } from "./scoringCard";
 import { calculateCreditLimit, type LimitInputData } from "./limitCalculator";
 import { type CreditGrade } from "./scoringCard";
@@ -175,7 +176,14 @@ export async function runLocalAnalysis(input: LocalAnalyzeInput): Promise<LocalA
 
   let ruleResult;
   try {
-    ruleResult = runHardRuleEngine(ruleInput as RuleInputData);
+    // 优先使用远端动态规则库（如果已下载）
+    const dynamicResult = runDynamicRuleEngine(ruleInput as unknown as Record<string, unknown>);
+    if (dynamicResult) {
+      ruleResult = dynamicResult;
+    } else {
+      // 降级到内置规则引擎
+      ruleResult = runHardRuleEngine(ruleInput as RuleInputData);
+    }
   } catch (e) {
     console.error("[LocalAnalyzer] Rule engine error:", e);
     ruleResult = { passed: true, triggeredRules: [], summary: "规则引擎运行异常，已跳过" };

@@ -6,6 +6,7 @@
  *   - 移除 downloadToTemp（直接在内存中处理）
  */
 import * as XLSX from 'xlsx';
+import { detectBankTemplate, resolveColumnIndices } from './bankTemplates';
 
 // ─── 工具函数 ──────────────────────────────────────────────────────────────────
 
@@ -107,6 +108,10 @@ export async function parseBankStatementExcel(fileUrl: string): Promise<BankStat
   }
   const headers = jsonData[headerRowIdx].map((c: any) => String(c).trim());
 
+  // 尝试精确银行模板匹配（优先级高于通用列名匹配）
+  const detectedTemplate = detectBankTemplate(headers);
+  const templateMatch = detectedTemplate ? resolveColumnIndices(detectedTemplate, headers) : null;
+
   // 识别关键列索引
   const findCol = (...keywords: string[]): number => {
     // 先尝试精确匹配
@@ -126,28 +131,38 @@ export async function parseBankStatementExcel(fileUrl: string): Promise<BankStat
     return -1;
   };
 
-  const dateCol = findCol('交易日期', '日期', '记账日期', '发生日期', '业务日期', 'Transaction Date', '记账时间', '交易时间', '入账日期', '起息日期', '起息日', '价值日期');
-  const inflowCol = findCol(
+  // 优先使用模板匹配的列索引，回退到通用匹配
+  // resolveColumnIndices 返回的字段：dateCol/inflowCol/outflowCol/amountCol/balanceCol/txTypeCol/directionCol/remarkCol/counterpartyCol
+  const getColIdx = (templateKey: 'dateCol'|'inflowCol'|'outflowCol'|'amountCol'|'balanceCol'|'txTypeCol'|'directionCol'|'remarkCol'|'counterpartyCol', ...fallbackKeywords: string[]): number => {
+    if (templateMatch && templateMatch[templateKey] !== undefined && (templateMatch[templateKey] as number) >= 0) {
+      return templateMatch[templateKey] as number;
+    }
+    return findCol(...fallbackKeywords);
+  };
+
+  const dateCol = getColIdx('dateCol', '交易日期', '日期', '记账日期', '发生日期', '业务日期', 'Transaction Date', '记账时间', '交易时间', '入账日期', '起息日期', '起息日', '价值日期');
+  const inflowCol = getColIdx('inflowCol',
     '贷方金额', '贷方发生额', '入账金额', '收入金额', '存入金额',
     '贷方', '收入', '存入', '收款金额', '汇入金额', '转入金额',
     'Credit Amount', 'Credit', 'Cr Amount', '贷'
   );
-  const outflowCol = findCol(
+  const outflowCol = getColIdx('outflowCol',
     '借方金额', '借方发生额', '出账金额', '支出金额', '付款金额',
     '借方', '支出', '取出', '转出', '汇出金额', '转出金额',
     'Debit Amount', 'Debit', 'Dr Amount', '借'
   );
-  const balanceCol = findCol('交易后余额', '账户余额', '账面余额', '余额', '当前余额', '期末余额', 'After-transaction balance', 'Balance', 'Bal');
+  const balanceCol = getColIdx('balanceCol', '交易后余额', '账户余额', '账面余额', '余额', '当前余额', '期末余额', 'After-transaction balance', 'Balance', 'Bal');
+  const amountCol_raw = getColIdx('amountCol', '交易金额', '发生额', '金额', '本次发生额', 'Trade Amount', 'Amount', 'Amt');
+  const txTypeCol = getColIdx('txTypeCol', '交易类型', '借贷标志', '收支标志', '借贷方向', 'Transaction Type', 'Dr/Cr', 'D/C', '借贷');
+  // 使用 amountCol_raw 替代原来的 amountCol 逻辑
   const amountCol = (inflowCol < 0 && outflowCol < 0) || (inflowCol >= 0 && outflowCol >= 0 && inflowCol === outflowCol)
-    ? findCol('交易金额', '发生额', '金额', '本次发生额', 'Trade Amount', 'Amount', 'Amt')
+    ? amountCol_raw
     : -1;
-  const txTypeCol = findCol('交易类型', '借贷标志', '收支标志', '借贷方向', 'Transaction Type', 'Dr/Cr', 'D/C', '借贷');
   const directionCol = (amountCol >= 0 && txTypeCol < 0)
-    ? findCol('方向', '收支类型', '收支方向', '类型', 'Direction', '收支')
+    ? getColIdx('directionCol', '方向', '收支类型', '收支方向', '类型', 'Direction', '收支')
     : -1;
-  const remarkCol = findCol('摘要', '用途', '备注', '交易摘要', '附言', 'Remark', 'Description');
-  const counterpartyNameCol = findCol('对方户名', '对手方名称', '对方名称', '收款人名称', '付款人名称', "Payee's Name", "Payer's Name", '对手方');
-
+  const remarkCol = getColIdx('remarkCol', '摘要', '用途', '备注', '交易摘要', '附言', 'Remark', 'Description');
+  const counterpartyNameCol = getColIdx('counterpartyCol', '对方户名', '对手方名称', '对方名称', '收款人名称', '付款人名称', "Payee's Name", "Payer's Name", '对手方');
   // 账户基本信息（从前几行提取）
   let accountName: string | undefined;
   let accountNumber: string | undefined;

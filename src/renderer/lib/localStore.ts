@@ -33,6 +33,19 @@ export interface LocalConfig {
   llmApiKey?: string;
   llmModel?: string;
   llmApiUrl?: string;
+  // SaaS 云端配置
+  saasUrl?: string;
+  saasApiKey?: string;
+  saasOrgId?: string;
+  // 规则库
+  ruleVersion?: string;
+  ruleUpdateUrl?: string;
+  autoCheckRules?: boolean;
+  // 隐私设置
+  autoDesensitize?: boolean;
+  // 界面偏好
+  theme?: "light" | "dark" | "system";
+  language?: "zh-CN" | "en-US";
 }
 
 // ─── 历史记录操作 ─────────────────────────────────────────────────────────────
@@ -102,6 +115,21 @@ export function deleteRecordsBatch(recordIds: string[]): void {
   const { records } = getHistory();
   const idSet = new Set(recordIds);
   saveHistory(records.filter(r => !idSet.has(r.recordId)));
+}
+
+// 删除多条记录（HistoryPage 使用）
+export function deleteRecords(recordIds: string[]): void {
+  deleteRecordsBatch(recordIds);
+}
+
+// 获取原始 LocalConfig 对象
+export function getRawConfig(): LocalConfig {
+  try {
+    const raw = localStorage.getItem(CONFIG_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
 }
 
 export function getRecordById(recordId: string): HistoryRecord | null {

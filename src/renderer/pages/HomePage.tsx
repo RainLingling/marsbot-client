@@ -37,6 +37,11 @@ import {
 } from "@/engine/localPdfParser";
 import { Streamdown } from "streamdown";
 import JSZip from "jszip";
+import { extractArchive, isRarOrSevenZip } from "@/engine/rarExtractor";
+import { generateMarkdownReport, exportReportAsMarkdown } from "@/engine/reportGenerator";
+// cloudPush functions used by CloudPushModal internally
+// import { buildPushSummary, pushToSaas } from "@/engine/cloudPush";
+import CloudPushModal from "@/components/CloudPushModal";
 import {
   DocChecklistPanel,
   DataVerifyPanel,
@@ -466,6 +471,9 @@ export default function Home() {
   const [pendingExcelFiles, setPendingExcelFiles] = useState<Array<{ file: File; tempId: string }>>([]);
   // 搜索状态
   const [isSearching, setIsSearching] = useState(false);
+  // 云端推送 Modal 状态
+  const [showCloudPushModal, setShowCloudPushModal] = useState(false);
+  const [cloudPushPayload, setCloudPushPayload] = useState<{ recordId: string; companyName: string } | null>(null);
   // 步骤：welcome → company-selected → loan-info → analyzing → result
   const [step, setStep] = useState<"welcome" | "company-selected" | "loan-info" | "analyzing" | "result">(savedSession?.step || "welcome");
 
@@ -1408,7 +1416,8 @@ export default function Home() {
 
     // 分离压缩包和普通文件
     const zipFiles = fileArr.filter(f => /\.(zip)$/i.test(f.name));
-    const normalFiles = fileArr.filter(f => !/\.(zip|rar|7z)$/i.test(f.name));
+    const rarFiles = fileArr.filter(f => isRarOrSevenZip(f.name));
+    const normalFiles = fileArr.filter(f => !/\.(zip|rar|7z|tar\.gz|tar\.bz2|tar|gz|bz2)$/i.test(f.name));
 
     // ── 处理压缩包 ──
     for (const zipFile of zipFiles) {
@@ -1623,6 +1632,30 @@ export default function Home() {
       }
     }
 
+    // ── 处理 RAR/7z 压缩包 ──
+    for (const rarFile of rarFiles) {
+      addMsg("user", `📦 ${rarFile.name}`);
+      addMsg("assistant", `正在解压 **${rarFile.name}**（RAR/7z 格式），识别内部文件类型...`);
+      try {
+        const extractedFiles = await extractArchive(rarFile);
+        if (extractedFiles.length === 0) {
+          addMsg("assistant", `⚠️ 压缩包 **${rarFile.name}** 内未发现可识别的文件。`);
+          continue;
+        }
+        addMsg("assistant", `✅ 解压成功，发现 ${extractedFiles.length} 个文件，正在识别类型...`);
+        for (const ef of extractedFiles) {
+          const guessed = guessDocType(ef.name);
+          if (guessed) {
+            await processOneFile(ef, guessed.docId, guessed.docName, guessed.parseType);
+          } else {
+            addMsg("assistant", `⚠️ 无法识别文件类型：**${ef.name}**，请手动选择文档类型后重新上传。`);
+          }
+        }
+      } catch (rarErr: unknown) {
+        const errMsg = rarErr instanceof Error ? rarErr.message : String(rarErr);
+        addMsg("assistant", `❌ 压缩包 **${rarFile.name}** 解压失败：${errMsg}`);
+      }
+    }
     // ── 处理普通文件 ──
     if (normalFiles.length === 0) return;
     const fileArrNormal = normalFiles;
@@ -3577,6 +3610,7 @@ export default function Home() {
               </button>
             )}
             {step === "result" && (
+              <>
               <button onClick={() => {
                 setMessages([{ role: "assistant", content: "好的，开始新的申请。请输入企业名称：" }]);
                 setStep("welcome"); setAppData({}); setAnalysisResult(null);
@@ -3584,6 +3618,31 @@ export default function Home() {
               }} className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border border-gray-200 text-gray-500 hover:bg-gray-50 transition">
                 <span>↩</span> 新建申请
               </button>
+              <button
+                onClick={async () => {
+                  if (!analysisResult || !appData.companyName) return;
+                  try {
+                    const md = generateMarkdownReport(appData as Record<string, unknown>, analysisResult as unknown as Record<string, unknown>);
+                    await exportReportAsMarkdown(md, appData.companyName);
+                  } catch (e) {
+                    addMsg("assistant", `❌ 报告导出失败：${e instanceof Error ? e.message : String(e)}`);
+                  }
+                }}
+                className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border border-green-200 text-green-600 hover:bg-green-50 transition"
+              >
+                <Download size={10} /> 导出报告
+              </button>
+              <button
+                onClick={() => {
+                  if (!analysisResult || !appData.companyName) return;
+                  setCloudPushPayload({ recordId: currentDraftRecordId || 'local', companyName: appData.companyName as string || '未知企业' });
+                  setShowCloudPushModal(true);
+                }}
+                className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border border-blue-200 text-blue-600 hover:bg-blue-50 transition"
+              >
+                <Globe size={10} /> 云端推送
+              </button>
+              </>
             )}
           </div>
 
@@ -4150,9 +4209,19 @@ export default function Home() {
           </div>
         </div>
       )}
+      {/* 云端推送确认 Modal */}
+      {showCloudPushModal && cloudPushPayload && (
+        <CloudPushModal
+          open={showCloudPushModal}
+          onClose={() => setShowCloudPushModal(false)}
+          recordId={cloudPushPayload.recordId}
+          companyName={cloudPushPayload.companyName}
+          appData={appData as Record<string, unknown>}
+          analysisResult={analysisResult as unknown as Record<string, unknown> | undefined}
+        />
+      )}
     </div>
   );
 }
-
-// ─── Sub-Panels ───────────────────────────────────────────────────────────────
+// ─── Sub-Panelss ───────────────────────────────────────────────────────────────
 
