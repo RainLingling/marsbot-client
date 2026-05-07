@@ -6,12 +6,11 @@ on:
       - 'v*'
   workflow_dispatch:
 
-env:
-  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
 jobs:
   build-linux:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -31,6 +30,8 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -50,6 +51,8 @@ jobs:
 
   build-mac:
     runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -77,6 +80,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: List artifacts
+        run: find artifacts -type f | head -20
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*

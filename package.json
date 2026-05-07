@@ -74,7 +74,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Marsbot Client"
-    }
+    },
+    "publish": "never"
   },
   "packageManager": "pnpm@10.33.3",
   "devDependencies": {
