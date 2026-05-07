@@ -15,10 +15,10 @@
     "build": "pnpm build:renderer && pnpm build:main",
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.main.json",
-    "package": "pnpm build && electron-builder",
-    "package:win": "pnpm build && electron-builder --win",
-    "package:mac": "pnpm build && electron-builder --mac",
-    "package:linux": "pnpm build && electron-builder --linux",
+    "package": "pnpm build && electron-builder --publish never",
+    "package:win": "pnpm build && electron-builder --win --publish never",
+    "package:mac": "pnpm build && electron-builder --mac --publish never",
+    "package:linux": "pnpm build && electron-builder --linux --publish never",
     "postinstall": "electron-builder install-app-deps"
   },
   "build": {
@@ -74,8 +74,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Marsbot Client"
-    },
-    "publish": "never"
+    }
   },
   "packageManager": "pnpm@10.33.3",
   "devDependencies": {
