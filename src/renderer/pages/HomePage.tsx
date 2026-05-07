@@ -771,10 +771,8 @@ export default function Home() {
       if (!file.name.match(/\.(zip|rar|7z)$/i)) {
         // Use DOC_PARSE_TYPE_MAP for consistent type mapping
         const parseType = nf.parseType || DOC_PARSE_TYPE_MAP[nf.docId] || "contract";
-        // [Local] Parse document via IPC or skip
-        const parsed = window.electronAPI?.parseDocument
-          ? await window.electronAPI.parseDocument({ fileUrl: url, fileType: parseType, docId: nf.docId, fileName: file?.name }).then((d: Record<string,unknown>) => ({ data: d })).catch(() => ({ data: null }))
-          : { data: null };
+        // [Local] Parse document via local Excel parser (渲染进程直接解析，无需IPC)
+        const parsed = await utils.client.loan.parseDocument.mutate({ fileUrl: url, fileType: parseType, docId: nf.docId });
         if (parsed?.data) {
           const d = parsed.data as Record<string, unknown>;
           setAppData(prev => {
