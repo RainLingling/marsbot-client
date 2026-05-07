@@ -29,6 +29,12 @@ import {
   deleteRecord, deleteRecordsBatch, getConfig, saveConfig,
   sendChatMessage, transcribeVoiceLocal, searchCompanyLocal
 } from "@/lib/localStore";
+import {
+  parseLocalPdf,
+  isPdfFile,
+  isImageFile,
+  extractPdfText,
+} from "@/engine/localPdfParser";
 import { Streamdown } from "streamdown";
 import JSZip from "jszip";
 import {
@@ -488,21 +494,75 @@ export default function Home() {
           mutate: async (args: { fileUrl: string; fileType: string; docId?: string }) => {
             try {
               const ft = args.fileType;
+              const url = args.fileUrl;
+
+              // ── PDF 文件：走离线 PDF 解析器 ──────────────────────────────────────
+              if (isPdfFile(url)) {
+                const result = await parseLocalPdf(url, ft);
+                console.log(`[parseDocument] PDF parsed: type=${ft}, method=${result.method}, textLen=${result.textLength}, isScanned=${result.isScanned}`);
+                return { type: ft, data: result.data };
+              }
+
+              // ── 图片文件：调用 LLM 视觉识别（如已配置） ──────────────────────────
+              if (isImageFile(url)) {
+                const { llmApiKey, llmApiUrl, llmModel } = getConfig();
+                if (llmApiKey && llmApiUrl) {
+                  try {
+                    const resp = await fetch(url);
+                    const blob = await resp.blob();
+                    const base64 = await new Promise<string>((resolve) => {
+                      const reader = new FileReader();
+                      reader.onload = () => resolve((reader.result as string).split(',')[1]);
+                      reader.readAsDataURL(blob);
+                    });
+                    const mimeType = blob.type || 'image/jpeg';
+                    const imgPrompt = ft === 'business_license'
+                      ? `请识别这张营业执照图片，提取以下字段并以JSON格式返回：{"company":"企业名称","creditCode":"统一社会信用代码（18位）","legalPerson":"法定代表人","registeredCapital":"注册资本","establishDate":"成立日期（YYYY-MM-DD）","address":"住所","businessScope":"经营范围（100字以内）"}。找不到的字段填null。只返回JSON。`
+                      : `请识别这张图片并提取关键信息，以JSON格式返回。文件类型：${ft}。找不到的字段填null。`;
+                    const llmResp = await fetch(llmApiUrl, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${llmApiKey}` },
+                      body: JSON.stringify({
+                        model: llmModel || 'gpt-4o',
+                        messages: [{
+                          role: 'user',
+                          content: [
+                            { type: 'text', text: imgPrompt },
+                            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}`, detail: 'high' } },
+                          ],
+                        }],
+                        max_tokens: 1500,
+                        response_format: { type: 'json_object' },
+                      }),
+                    });
+                    if (llmResp.ok) {
+                      const llmData = await llmResp.json() as any;
+                      const content = llmData.choices?.[0]?.message?.content;
+                      if (content) return { type: ft, data: JSON.parse(typeof content === 'string' ? content : JSON.stringify(content)) };
+                    }
+                  } catch (imgErr) {
+                    console.error('[parseDocument] image LLM error:', imgErr);
+                  }
+                }
+                return { type: ft, data: { note: '图片文件需配置支持视觉的LLM API（如GPT-4o）才能识别内容', dataSource: ft } };
+              }
+
+              // ── Excel / CSV 文件：走本地 Excel 解析器 ────────────────────────────
               if (ft === 'bank_statement') {
-                const result = await parseBankStatementExcel(args.fileUrl);
+                const result = await parseBankStatementExcel(url);
                 return { data: result };
-              } else if (ft === 'financial_report' || ft === 'financial_statement') {
-                const result = await parseFinancialStatementExcel(args.fileUrl);
+              } else if (ft === 'financial_report' || ft === 'financial_statement' || ft === 'audit_report') {
+                const result = await parseFinancialStatementExcel(url);
                 return { data: result };
               } else if (ft === 'top5_customer') {
-                const result = await parseTop5CustomerExcel(args.fileUrl);
+                const result = await parseTop5CustomerExcel(url);
                 return { data: result };
               } else if (ft === 'revenue_breakdown') {
-                const result = await parseRevenueBreakdownExcel(args.fileUrl);
+                const result = await parseRevenueBreakdownExcel(url);
                 return { data: result };
               } else {
                 // 通用 Excel 解析（返回原始行数据）
-                const resp = await fetch(args.fileUrl);
+                const resp = await fetch(url);
                 const buffer = await resp.arrayBuffer();
                 const XLSX = await import('xlsx');
                 const wb = XLSX.read(buffer, { type: 'array' });
@@ -518,7 +578,49 @@ export default function Home() {
         },
         sniffDocType: {
           mutate: async (args: { fileUrl: string; fileName: string }) => {
-            // 先读取第一个 sheet 的表头，再用本地识别函数判断类型
+            const lowerName = args.fileName.toLowerCase();
+
+            // ── PDF 文件：文件名关键词 + 首页文本识别 ──────────────────────────────
+            if (isPdfFile(args.fileUrl, args.fileName)) {
+              if (/营业执照|business.?license/.test(lowerName)) return { parseType: 'business_license' };
+              if (/审计报告|audit.?report/.test(lowerName)) return { parseType: 'audit_report' };
+              if (/财务报表|financial.?report|资产负债|利润表/.test(lowerName)) return { parseType: 'financial_report' };
+              if (/银行流水|bank.?statement|对账单|流水/.test(lowerName)) return { parseType: 'bank_statement' };
+              if (/增值税|vat|纳税申报/.test(lowerName)) return { parseType: 'tax_vat' };
+              if (/所得税|income.?tax/.test(lowerName)) return { parseType: 'tax_income' };
+              if (/完税证明|tax.?clearance/.test(lowerName)) return { parseType: 'tax_clearance' };
+              if (/纳税信用|tax.?credit/.test(lowerName)) return { parseType: 'tax_credit' };
+              if (/资质证书|qualification|许可证/.test(lowerName)) return { parseType: 'qualification' };
+              if (/合同|contract/.test(lowerName)) return { parseType: 'contract' };
+              if (/开户许可|bank.?permit/.test(lowerName)) return { parseType: 'bank_permit' };
+              if (/公司介绍|企业介绍|business.?intro/.test(lowerName)) return { parseType: 'business_intro' };
+              if (/简历|resume/.test(lowerName)) return { parseType: 'mgmt_resume' };
+              // 文件名无法识别时，尝试提取首页文本做关键词匹配
+              try {
+                const { pages } = await extractPdfText(args.fileUrl);
+                const firstPageText = (pages[0] || '').slice(0, 500);
+                if (/营业执照/.test(firstPageText)) return { parseType: 'business_license' };
+                if (/审计报告|会计师事务所/.test(firstPageText)) return { parseType: 'audit_report' };
+                if (/资产负债表|利润表|现金流量表/.test(firstPageText)) return { parseType: 'financial_report' };
+                if (/银行|流水|账号|借方|贷方/.test(firstPageText)) return { parseType: 'bank_statement' };
+                if (/增值税申报/.test(firstPageText)) return { parseType: 'tax_vat' };
+                if (/所得税申报/.test(firstPageText)) return { parseType: 'tax_income' };
+                if (/完税证明/.test(firstPageText)) return { parseType: 'tax_clearance' };
+                if (/纳税信用/.test(firstPageText)) return { parseType: 'tax_credit' };
+              } catch { /* ignore */ }
+              return { parseType: 'contract' }; // PDF 默认
+            }
+
+            // ── 图片文件：文件名关键词识别 ────────────────────────────────────────
+            if (isImageFile(args.fileUrl, args.fileName)) {
+              if (/营业执照|business.?license/.test(lowerName)) return { parseType: 'business_license' };
+              if (/身份证|id.?card/.test(lowerName)) return { parseType: 'id_card' };
+              if (/开户许可|bank.?permit/.test(lowerName)) return { parseType: 'bank_permit' };
+              if (/资质|qualification|许可证/.test(lowerName)) return { parseType: 'qualification' };
+              return { parseType: 'business_license' }; // 图片默认尝试营业执照
+            }
+
+            // ── Excel / CSV 文件：读取表头识别 ────────────────────────────────────
             const headers = await getFirstSheetHeaders(args.fileUrl).catch(() => []);
             const docType = localSniffDocType(args.fileName, headers);
             const typeMap: Record<string, string> = {
@@ -526,8 +628,8 @@ export default function Home() {
               'financial_statement': 'financial_report',
               'top5_customer': 'top5_customer',
               'revenue_breakdown': 'revenue_breakdown',
-              'tax_declaration': 'tax_report',
-              'tax_certificate': 'tax_report',
+              'tax_declaration': 'tax_vat',
+              'tax_certificate': 'tax_credit',
               'business_license': 'business_license',
               'audit_report': 'audit_report',
               'unknown': 'contract',

@@ -1,6 +1,6 @@
 {
   "name": "marsbot-client",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Marsbot 本地离线客户端 - AI信贷风控分析工具",
   "main": "dist/main/main/index.js",
   "author": {
@@ -96,6 +96,7 @@
     "jszip": "^3.10.1",
     "lucide-react": "^1.14.0",
     "next-themes": "^0.4.6",
+    "pdfjs-dist": "^5.7.284",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "recharts": "^3.8.1",
