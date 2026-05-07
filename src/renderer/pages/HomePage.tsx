@@ -35,6 +35,7 @@ import {
   isImageFile,
   extractPdfText,
 } from "@/engine/localPdfParser";
+import { recognizeImage, extractBusinessLicenseFields } from "@/engine/proOcr";
 import { Streamdown } from "streamdown";
 import JSZip from "jszip";
 import { extractArchive, isRarOrSevenZip } from "@/engine/rarExtractor";
@@ -511,8 +512,37 @@ export default function Home() {
                 return { type: ft, data: result.data };
               }
 
-              // ── 图片文件：调用 LLM 视觉识别（如已配置） ──────────────────────────
+              // ── 图片文件：优先本地 OCR，LLM 作为备选 ──────────────────────────
               if (isImageFile(url)) {
+                // 第一层：本地 OCR（Tesseract.js，无需联网）
+                try {
+                  const ocrBlob = await fetch(url).then(r => r.blob());
+                  const ocrResult = await recognizeImage(ocrBlob);
+                  if (ocrResult.confidence >= 50 && ocrResult.rawText.replace(/\s/g, '').length >= 80) {
+                    let ocrData: Record<string, unknown>;
+                    if (ft === 'business_license') {
+                      const ruleFields = extractBusinessLicenseFields(ocrResult.rawText);
+                      ocrData = {
+                        ...ruleFields,
+                        _ocrConfidence: ocrResult.confidence,
+                        _method: 'local_ocr',
+                        dataSource: '营业执照（离线OCR）',
+                      };
+                    } else {
+                      ocrData = {
+                        rawText: ocrResult.rawText.slice(0, 2000),
+                        _ocrConfidence: ocrResult.confidence,
+                        _method: 'local_ocr',
+                        dataSource: ft,
+                      };
+                    }
+                    console.log(`[parseDocument] 本地OCR成功: confidence=${ocrResult.confidence}%, chars=${ocrResult.rawText.length}`);
+                    return { type: ft, data: ocrData };
+                  }
+                } catch (ocrErr) {
+                  console.warn('[parseDocument] 本地OCR失败，尝试LLM:', ocrErr);
+                }
+                // 第二层：LLM 视觉识别（如已配置）
                 const { llmApiKey, llmApiUrl, llmModel } = getConfig();
                 if (llmApiKey && llmApiUrl) {
                   try {
@@ -552,7 +582,7 @@ export default function Home() {
                     console.error('[parseDocument] image LLM error:', imgErr);
                   }
                 }
-                return { type: ft, data: { note: '图片文件需配置支持视觉的LLM API（如GPT-4o）才能识别内容', dataSource: ft } };
+                return { type: ft, data: { note: '图片OCR识别置信度不足，建议配置支持视觉的LLM API（如GPT-4o）以提升准确率', dataSource: ft } };
               }
 
               // ── Excel / CSV 文件：走本地 Excel 解析器 ────────────────────────────

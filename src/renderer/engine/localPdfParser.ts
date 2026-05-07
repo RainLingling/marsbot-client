@@ -20,6 +20,56 @@
  *   - （其他）          通用 LLM 提取
  */
 
+// ─── OCR 模块（懒加载） ──────────────────────────────────────────────────────────
+let _ocrModule: typeof import('./proOcr') | null = null;
+async function getOcrModule() {
+  if (!_ocrModule) {
+    _ocrModule = await import('./proOcr');
+  }
+  return _ocrModule;
+}
+
+/**
+ * 对扫描件 PDF 执行 OCR（渲染每页为 Canvas 后识别）
+ */
+async function ocrScannedPdf(
+  fileUrl: string,
+  maxPages: number = 5,
+  onProgress?: (progress: number) => void
+): Promise<{ fullText: string; confidence: number; pageCount: number }> {
+  const pdfjs = await getPdfjs();
+  const ocr = await getOcrModule();
+
+  const resp = await fetch(fileUrl);
+  const buffer = await resp.arrayBuffer();
+  const pdf = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
+  const totalPages = Math.min(pdf.numPages, maxPages);
+
+  const pageTexts: string[] = [];
+  let totalConfidence = 0;
+
+  for (let i = 1; i <= totalPages; i++) {
+    onProgress?.(Math.round((i - 1) / totalPages * 80));
+    const page = await pdf.getPage(i);
+    const viewport = page.getViewport({ scale: 2.0 });
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext('2d')!;
+    await page.render({ canvasContext: ctx as any, viewport }).promise;
+    const result = await ocr.recognizeCanvas(canvas);
+    pageTexts.push(result.rawText);
+    totalConfidence += result.confidence;
+  }
+
+  onProgress?.(100);
+  return {
+    fullText: pageTexts.join('\n\n---\n\n'),
+    confidence: Math.round(totalConfidence / totalPages),
+    pageCount: totalPages,
+  };
+}
+
 // ─── PDF.js 初始化 ─────────────────────────────────────────────────────────────
 let pdfjsLib: typeof import('pdfjs-dist') | null = null;
 
@@ -724,18 +774,63 @@ export async function parseLocalPdf(
       ruleResult = { rawText: fullText.slice(0, 2000), dataSource: fileType };
   }
 
-  // 扫描件且无 LLM：返回规则结果（可能为空）
+  // 扫描件处理：优先本地 OCR，再考虑 LLM
   const config = getLlmConfig();
   const hasLlm = !!(config.llmApiKey && config.llmApiUrl);
 
-  if (isScanned && !hasLlm) {
-    return {
-      type: fileType,
-      data: { ...ruleResult, isScanned: true, note: '扫描件PDF，需配置LLM API才能识别内容' },
-      method: 'scanned_no_llm',
-      isScanned: true,
-      textLength,
-    };
+  if (isScanned) {
+    // 尝试本地 OCR（Tesseract.js）
+    try {
+      const ocrResult = await ocrScannedPdf(fileUrl, 5);
+      if (ocrResult.confidence >= 50 && ocrResult.fullText.replace(/\s/g, '').length >= 100) {
+        // OCR 成功：用 OCR 文本重新走规则解析
+        let ocrRuleResult: Record<string, unknown> = {};
+        switch (fileType) {
+          case 'business_license': {
+            ocrRuleResult = parseBusinessLicenseText(ocrResult.fullText);
+            // 额外用专用字段提取器
+            const ocr = await getOcrModule();
+            const blFields = ocr.extractBusinessLicenseFields(ocrResult.fullText);
+            const blMerged = { ...ocrRuleResult };
+            for (const [k, v] of Object.entries(blFields)) {
+              if (v !== undefined && v !== null && v !== '') blMerged[k] = v;
+            }
+            return {
+              type: fileType,
+              data: { ...blMerged, _ocrConfidence: ocrResult.confidence, _method: 'local_ocr' },
+              method: 'rule',
+              isScanned: true,
+              textLength: ocrResult.fullText.length,
+            };
+          }
+          case 'audit_report': ocrRuleResult = parseAuditReportText(ocrResult.fullText); break;
+          case 'bank_statement': ocrRuleResult = parseBankStatementFromText(ocrResult.fullText); break;
+          case 'tax_clearance': ocrRuleResult = parseTaxClearanceText(ocrResult.fullText); break;
+          case 'tax_credit': ocrRuleResult = parseTaxCreditText(ocrResult.fullText); break;
+          default: ocrRuleResult = { rawText: ocrResult.fullText.slice(0, 2000), dataSource: fileType };
+        }
+        return {
+          type: fileType,
+          data: { ...ocrRuleResult, _ocrConfidence: ocrResult.confidence, _method: 'local_ocr' },
+          method: 'rule',
+          isScanned: true,
+          textLength: ocrResult.fullText.length,
+        };
+      }
+    } catch (ocrErr) {
+      console.warn('[localPdfParser] 本地 OCR 失败，降级:', ocrErr);
+    }
+
+    // OCR 失败或置信度不足：无 LLM 时返回提示
+    if (!hasLlm) {
+      return {
+        type: fileType,
+        data: { ...ruleResult, isScanned: true, note: '扫描件PDF，本地OCR置信度不足，建议配置LLM API以提升准确率' },
+        method: 'scanned_no_llm',
+        isScanned: true,
+        textLength,
+      };
+    }
   }
 
   // Step 3: LLM 兜底（文本版 PDF 或扫描件+LLM）
