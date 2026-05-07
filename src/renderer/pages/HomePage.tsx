@@ -459,12 +459,63 @@ export default function Home() {
    const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
-  // [Local] No tRPC utils needed
+  // [Local] utils stub - replaces tRPC useUtils()
+  const utils = {
+    loan: {
+      getConfig: { invalidate: () => {} },
+    },
+    client: {
+      loan: {
+        searchCompany: {
+          query: async (_args: { keyword: string }) => {
+            return { companies: [] as CompanyCandidate[] };
+          },
+        },
+        getCompanyProfile: {
+          query: async (_args: { companyName: string; companyId?: string }) => {
+            return { basic: { name: _args.companyName } };
+          },
+        },
+        parseDocument: {
+          mutate: async (args: { fileUrl: string; fileType: string; docId?: string }) => {
+            try {
+              const resp = await fetch(args.fileUrl);
+              const buffer = await resp.arrayBuffer();
+              const XLSX = await import('xlsx');
+              const wb = XLSX.read(buffer, { type: 'array' });
+              const sheet = wb.Sheets[wb.SheetNames[0]];
+              const data = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as unknown[][];
+              return { data: { rawRows: data.slice(0, 50) } };
+            } catch {
+              return { data: null };
+            }
+          },
+        },
+        sniffDocType: {
+          mutate: async (args: { fileUrl: string; fileName: string }) => {
+            const name = args.fileName.toLowerCase();
+            if (name.includes('流水') || name.includes('bank')) return { parseType: 'bank_statement' };
+            if (name.includes('资产负债') || name.includes('balance')) return { parseType: 'financial_report' };
+            if (name.includes('审计') || name.includes('audit')) return { parseType: 'audit_report' };
+            if (name.includes('税') || name.includes('tax')) return { parseType: 'tax_report' };
+            if (name.includes('营业执照') || name.includes('license')) return { parseType: 'business_license' };
+            if (name.includes('清单') || name.includes('list') || name.includes('目录')) return { parseType: 'skip' };
+            return { parseType: 'contract' };
+          },
+        },
+        updateFileState: {
+          mutate: async (_args: unknown) => { /* local: no-op */ },
+        },
+        getApplicationDetail: {
+          query: async (_args: { id: string | number }) => {
+            const history = getHistory();
+            return history.find((r: { id: string | number }) => String(r.id) === String(_args.id)) || null;
+          },
+        },
+      },
+    },
+  };
   // [Local] File upload handled locally
-  // [Local] Document parsing handled locally
-  // [Local] Doc type sniffing handled locally
-  // [Local] Analysis handled by localAnalyzer
-  // [Local] Chat handled by localStore
   // [Local] Voice transcription handled locally
   // [Local] Config saved to localStorage
   // ── 语音录音状态 ──
@@ -1157,7 +1208,7 @@ export default function Home() {
       setUploadedFiles(prev => prev.map(f => f.id === nf.id ? { ...f, status: "error" } : f));
       setUploadedDocs(prev => ({ ...prev, [nf.docId]: true }));
     }
-  }, [uploadMutation, utils]);
+  }, [utils]);
 
   // ─── 重试解析（有URL时跳过上传直接解析，没有URL时重新上传） ─────────────────────
   const retryParseFile = useCallback(async (fileId: string) => {
@@ -1557,7 +1608,7 @@ export default function Home() {
       return [...prev, { role: 'assistant' as const, content: summaryMsg, timestamp: new Date().toISOString() }];
     });
     setActiveTab("data-verify");
-  }, [addMsg, uploadMutation, utils, appData.companyName, step, processOneFile, saasAuthenticated, saasUser, currentDraftRecordId, historyQuery.data, createDraftMutation, setCurrentDraftRecordId]);
+  }, [addMsg, utils, appData.companyName, step, processOneFile, saasAuthenticated, saasUser, currentDraftRecordId, historyQuery.data, createDraftMutation, setCurrentDraftRecordId]);
 
   // ─── 发送消息（通用LLM + 信贷引导流程）─────────────────────────────────────
   // ── 语音录音处理 ──────────────────────────────────────────────────────────
@@ -1649,7 +1700,7 @@ export default function Home() {
         }
       }
     }
-  }, [isRecording, uploadMutation, transcribeVoiceMutation]);
+  }, [isRecording]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
@@ -1802,7 +1853,7 @@ export default function Home() {
     } finally {
       setIsChatLoading(false);
     }
-  }, [input, step, appData, analysisResult, messages, isAnalyzing, isSearching, isChatLoading, handleSearch, addMsg, chatMutation, currentDraftRecordId, saasAuthenticated, historyQuery.data, createDraftMutation, setCurrentDraftRecordId]);
+  }, [input, step, appData, analysisResult, messages, isAnalyzing, isSearching, isChatLoading, handleSearch, addMsg, currentDraftRecordId, saasAuthenticated, historyQuery.data, createDraftMutation, setCurrentDraftRecordId]);
 
   // ─── 开始分析 ─────────────────────────────────────────────────────────────
   const handleAnalyze = useCallback(async () => {
@@ -1892,7 +1943,7 @@ export default function Home() {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [appData, analyzeMutation, addMsg, messages, currentDraftRecordId, updateDraftCompanyMutation, utils]);
+  }, [appData, addMsg, messages, currentDraftRecordId, updateDraftCompanyMutation, utils]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -2053,7 +2104,7 @@ export default function Home() {
     } catch {
       setUploadedFiles(prev => prev.map(f => f.id === tempId ? { ...f, status: "error" } : f));
     }
-  }, [uploadMutation, utils, addMsg]);
+  }, [utils, addMsg]);
 
   // 资料清单条目独立上传：绕过 guessDocType，直接继承条目的 parseType
   const handleFileUploadForDoc = useCallback(async (files: FileList | File[], docId: string, docName: string, parseType: string) => {
@@ -2259,7 +2310,7 @@ export default function Home() {
         addMsg("assistant", `❌ **${file.name}** 解析失败，请重试。`);
       }
     }
-  }, [uploadMutation, utils, addMsg]);
+  }, [utils, addMsg]);
 
   return (
     <div className="h-screen flex flex-col bg-[#f0f2f5] pb-14 md:pb-0">

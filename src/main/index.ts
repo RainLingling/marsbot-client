@@ -1,10 +1,10 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net } from "electron";
 import path from "path";
 import fs from "fs";
 import os from "os";
 
 // ─── 环境检测 ──────────────────────────────────────────────────────────────────
-const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
+const isDev = process.env.NODE_ENV === "development" && process.env.ELECTRON_DEV === "1";
 
 // ─── 数据目录 ──────────────────────────────────────────────────────────────────
 const DATA_DIR = path.join(app.getPath("userData"), "marsbot-data");
@@ -31,10 +31,11 @@ function createMainWindow() {
     title: "Marsbot Client - AI信贷风控分析",
     backgroundColor: "#ffffff",
     webPreferences: {
-      preload: path.join(__dirname, "../preload/index.js"),
+      preload: path.join(__dirname, "../../preload/index.js"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      webSecurity: false,
     },
     show: false,
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
@@ -45,7 +46,7 @@ function createMainWindow() {
     mainWindow.loadURL("http://localhost:5173");
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
+    mainWindow.loadURL("app://marsbot/index.html");
   }
 
   mainWindow.once("ready-to-show", () => {
@@ -58,9 +59,36 @@ function createMainWindow() {
   });
 }
 
+// ─── 注册自定义协议 ──────────────────────────────────────────────────────────────
+// 必须在 app.whenReady 之前注册协议方案
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "app",
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+    },
+  },
+]);
+
 // ─── App 生命周期 ──────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   ensureDirectories();
+
+  // 注册 app:// 协议，将请求映射到 dist/renderer 目录
+  const RENDERER_DIR = path.join(__dirname, "../../renderer");
+  protocol.handle("app", (request) => {
+    const url = new URL(request.url);
+    let filePath = path.join(RENDERER_DIR, url.pathname);
+    // 默认加载 index.html
+    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+      filePath = path.join(RENDERER_DIR, "index.html");
+    }
+    return net.fetch(`file://${filePath}`);
+  });
+
   createMainWindow();
 
   app.on("activate", () => {
