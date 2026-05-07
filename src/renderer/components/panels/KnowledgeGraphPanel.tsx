@@ -10,6 +10,7 @@ import {
 import { trpc } from "@/lib/trpc";
 import { Streamdown } from "streamdown";
 import type { AnalysisResult, AppData, UploadedFile } from "./panelTypes";
+import { GraphReader, type GraphEntity } from "@/engine/graphDb";
 
 function KnowledgeGraphPanel({ appData, analysisResult, uploadedFiles }: { appData: AppData; analysisResult: AnalysisResult | null; uploadedFiles?: UploadedFile[] }) {
   const [selectedEntityId, setSelectedEntityId] = React.useState<string>("ApplicantEnterprise");
@@ -76,6 +77,19 @@ function KnowledgeGraphPanel({ appData, analysisResult, uploadedFiles }: { appDa
     { applicationId: applicationId! },
     { enabled: !!applicationId }
   );
+  // 本地图谱查询（优先使用本地 SQLite，不依赖云端）
+  const [localGraphEntities, setLocalGraphEntities] = React.useState<GraphEntity[]>([]);
+  const [localGraphStats, setLocalGraphStats] = React.useState<{ entityCount: number; relationCount: number; entityTypes: Record<string, number>; relationTypes: Record<string, number> } | null>(null);
+  React.useEffect(() => {
+    if (!applicationId) return;
+    const appIdStr = String(applicationId);
+    GraphReader.getEntities(appIdStr)
+      .then(entities => setLocalGraphEntities(entities))
+      .catch(e => console.warn('[KnowledgeGraphPanel] Local graph query failed:', e));
+    GraphReader.getGraphStats(appIdStr)
+      .then(stats => setLocalGraphStats(stats))
+      .catch(e => console.warn('[KnowledgeGraphPanel] Local graph stats failed:', e));
+  }, [applicationId]);
 
   // ── 完整44类实体本体结构 ──────────────────────
   type OntologyNode = {
@@ -1154,11 +1168,40 @@ function KnowledgeGraphPanel({ appData, analysisResult, uploadedFiles }: { appDa
     },
   };
 
-  // 从 DB 节点补充真实数据
+  // 从云端 DB 节点补充真实数据
   dbNodes.forEach(n => {
     const typeKey = n.type?.replace("Snapshot", "").replace("Applying", "Applicant");
     if (typeKey && n.properties) {
       REAL_DATA_MAP[typeKey] = { ...(REAL_DATA_MAP[typeKey] || {}), ...(n.properties as Record<string, unknown>) };
+    }
+  });
+
+  // 从本地 SQLite 图谱节点补充真实数据（优先级高于云端，覆盖同名字段）
+  localGraphEntities.forEach(entity => {
+    // 将图谱实体类型映射到本体 ID
+    const typeMap: Record<string, string> = {
+      Company: 'ApplicantEnterprise',
+      LegalRepresentative: 'LegalRepresentative',
+      ActualController: 'ActualController',
+      Shareholder: 'Shareholder',
+      BankAccount: 'BankAccount',
+      BankTransaction: 'BankAccount', // 月度流水合并到账户节点
+      BalanceSheet: 'BalanceSheet',
+      IncomeStatement: 'IncomeStatement',
+      CashFlowStatement: 'CashFlowStatement',
+      TaxDeclaration: 'VatReturn',
+      TaxCertificate: 'TaxClearanceCertificate',
+      TaxCredit: 'TaxCreditRating',
+      AuditReport: 'AuditReport',
+      BusinessLicense: 'ApplicantEnterprise', // 营业执照数据合并到企业节点
+      Top5Customer: 'CustomerEnterprise',
+      Top5Supplier: 'SupplierEnterprise',
+      FeatureVector: 'ApplicantEnterprise', // 特征向量合并到企业节点
+      AnalysisResult: 'ApplicantEnterprise', // 分析结论合并到企业节点
+    };
+    const ontologyId = typeMap[entity.type];
+    if (ontologyId && entity.properties && Object.keys(entity.properties).length > 0) {
+      REAL_DATA_MAP[ontologyId] = { ...(REAL_DATA_MAP[ontologyId] || {}), ...entity.properties };
     }
   });
 

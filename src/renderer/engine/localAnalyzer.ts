@@ -8,6 +8,7 @@ import { runHardRuleEngine, type RuleInputData } from "./hardRuleEngine";
 import { computeScorecardResult } from "./scoringCard";
 import { calculateCreditLimit, type LimitInputData } from "./limitCalculator";
 import { type CreditGrade } from "./scoringCard";
+import { writeAppDataToGraph, writeAnalysisResultToGraph } from "./graphDb";
 
 // ─── 输入类型 ─────────────────────────────────────────────────────────────────
 export interface LocalAnalyzeInput {
@@ -260,6 +261,26 @@ export async function runLocalAnalysis(input: LocalAnalyzeInput): Promise<LocalA
     },
     rawAppData: input as unknown as Record<string, unknown>,
   };
+
+  // ── Layer 2: 写入图谱（异步，不阻塞返回）────────────────────────────────────
+  try {
+    await writeAppDataToGraph({
+      applicationId,
+      companyName: input.companyName,
+      appData: input as unknown as Record<string, unknown>,
+    });
+    await writeAnalysisResultToGraph({
+      applicationId,
+      companyName: input.companyName,
+      verdict,
+      score,
+      featureVector: (featureVector ?? {}) as Record<string, unknown>,
+      analysisReport: report as unknown as Record<string, unknown>,
+    });
+  } catch (e) {
+    // 图谱写入失败不影响主流程
+    console.warn("[LocalAnalyzer] Graph write failed (non-fatal):", e);
+  }
 
   return { applicationId, verdict, score, report };
 }
