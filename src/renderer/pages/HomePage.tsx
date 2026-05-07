@@ -16,6 +16,14 @@ import {
   TrendingUp, Package, Mic, MicOff, Square, User, BookOpen
 } from "lucide-react";
 import { runLocalAnalysis } from "@/engine/localAnalyzer";
+import {
+  parseBankStatementExcel,
+  parseFinancialStatementExcel,
+  parseTop5CustomerExcel,
+  parseRevenueBreakdownExcel,
+  sniffDocType as localSniffDocType,
+  getFirstSheetHeaders,
+} from "@/engine/localExcelParser";
 import { 
   getHistory, createDraft, updateDraftCompany, updateRecordWithResult,
   deleteRecord, deleteRecordsBatch, getConfig, saveConfig,
@@ -479,28 +487,52 @@ export default function Home() {
         parseDocument: {
           mutate: async (args: { fileUrl: string; fileType: string; docId?: string }) => {
             try {
-              const resp = await fetch(args.fileUrl);
-              const buffer = await resp.arrayBuffer();
-              const XLSX = await import('xlsx');
-              const wb = XLSX.read(buffer, { type: 'array' });
-              const sheet = wb.Sheets[wb.SheetNames[0]];
-              const data = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as unknown[][];
-              return { data: { rawRows: data.slice(0, 50) } };
-            } catch {
+              const ft = args.fileType;
+              if (ft === 'bank_statement') {
+                const result = await parseBankStatementExcel(args.fileUrl);
+                return { data: result };
+              } else if (ft === 'financial_report' || ft === 'financial_statement') {
+                const result = await parseFinancialStatementExcel(args.fileUrl);
+                return { data: result };
+              } else if (ft === 'top5_customer') {
+                const result = await parseTop5CustomerExcel(args.fileUrl);
+                return { data: result };
+              } else if (ft === 'revenue_breakdown') {
+                const result = await parseRevenueBreakdownExcel(args.fileUrl);
+                return { data: result };
+              } else {
+                // 通用 Excel 解析（返回原始行数据）
+                const resp = await fetch(args.fileUrl);
+                const buffer = await resp.arrayBuffer();
+                const XLSX = await import('xlsx');
+                const wb = XLSX.read(buffer, { type: 'array' });
+                const sheet = wb.Sheets[wb.SheetNames[0]];
+                const data = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as unknown[][];
+                return { data: { rawRows: data.slice(0, 100) } };
+              }
+            } catch (err) {
+              console.error('[parseDocument] error:', err);
               return { data: null };
             }
           },
         },
         sniffDocType: {
           mutate: async (args: { fileUrl: string; fileName: string }) => {
-            const name = args.fileName.toLowerCase();
-            if (name.includes('流水') || name.includes('bank')) return { parseType: 'bank_statement' };
-            if (name.includes('资产负债') || name.includes('balance')) return { parseType: 'financial_report' };
-            if (name.includes('审计') || name.includes('audit')) return { parseType: 'audit_report' };
-            if (name.includes('税') || name.includes('tax')) return { parseType: 'tax_report' };
-            if (name.includes('营业执照') || name.includes('license')) return { parseType: 'business_license' };
-            if (name.includes('清单') || name.includes('list') || name.includes('目录')) return { parseType: 'skip' };
-            return { parseType: 'contract' };
+            // 先读取第一个 sheet 的表头，再用本地识别函数判断类型
+            const headers = await getFirstSheetHeaders(args.fileUrl).catch(() => []);
+            const docType = localSniffDocType(args.fileName, headers);
+            const typeMap: Record<string, string> = {
+              'bank_statement': 'bank_statement',
+              'financial_statement': 'financial_report',
+              'top5_customer': 'top5_customer',
+              'revenue_breakdown': 'revenue_breakdown',
+              'tax_declaration': 'tax_report',
+              'tax_certificate': 'tax_report',
+              'business_license': 'business_license',
+              'audit_report': 'audit_report',
+              'unknown': 'contract',
+            };
+            return { parseType: typeMap[docType] || 'contract' };
           },
         },
         updateFileState: {
@@ -1386,12 +1418,19 @@ export default function Home() {
           };
           try {
             updateZipEntry('uploading');
-            const formData = new FormData();
-            formData.append('file', entry.file!, entry.name);
-            const resp = await fetch('/api/upload', { method: 'POST', body: formData, credentials: 'include' });
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const data = await resp.json() as { url: string };
-            const url = data.url;
+            // [Local] 直接使用 blob URL，跳过服务器上传
+            let url: string;
+            try {
+              const formData = new FormData();
+              formData.append('file', entry.file!, entry.name);
+              const resp = await fetch('/api/upload', { method: 'POST', body: formData, credentials: 'include' });
+              if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+              const data = await resp.json() as { url: string };
+              url = data.url;
+            } catch {
+              // [Local] 服务器上传失败，回退到本地 blob URL
+              url = URL.createObjectURL(entry.file!);
+            }
             // 如果该条目是 pending（guessDocType 无法识别），先嗅探内容确定类型
             let finalNf = { ...nf, url };
             if (entry.status === 'pending') {
